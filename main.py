@@ -52,9 +52,7 @@ async def audit_log(ctx, target_username: str = None):
         await ctx.send("사용법: `!감사로그 [대상자 로블록스 닉네임]`")
         return
 
-    # 닉네임 앞에 붙어있는 $ 기호가 있다면 강제로 제거
     target_username = target_username.lstrip('$')
-
     status_msg = await ctx.send(f'🔍 "{target_username}"님의 그룹 감사 로그를 검색 중입니다...')
 
     try:
@@ -65,7 +63,7 @@ async def audit_log(ctx, target_username: str = None):
 
         logs = get_audit_logs()
         if not logs:
-            await status_msg.edit(content='⚠️ 감사 로그를 불러오지 못했거나 쿠키 권한을 확인해주세요.')
+            await status_msg.edit(content='⚠️ 감사 로그를 불러오지 못했거나 쿠키 권한이 부족합니다. (쿠키 만료 또는 그룹 ID 확인 필요)')
             return
 
         user_logs = []
@@ -100,8 +98,9 @@ async def audit_log(ctx, target_username: str = None):
         await status_msg.edit(content=response_text)
 
     except Exception as e:
-        print(e)
-        await status_msg.edit(content='⚠️ 감사 로그를 처리하는 중 오류가 발생했습니다.')
+        print(f"Error occurred: {str(e)}")
+        # 디스코드 창에 정확한 에러 내용 표시
+        await status_msg.edit(content=f'⚠️ 에러 발생: `{str(e)}`')
 
 if __name__ == '__main__':
     t = threading.Thread(target=run_flask)
