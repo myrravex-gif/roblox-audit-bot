@@ -1,9 +1,11 @@
 import os
 import threading
 import discord
+from discord import app_commands
 from discord.ext import commands
 import requests
 from flask import Flask
+from datetime import datetime, timedelta, timezone
 
 # 1. Flask 웹 서버 설정 (Render 웹 서비스 포트 바인딩용)
 app = Flask('')
@@ -16,7 +18,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
 
-# 2. 디스코드 봇 설정
+# 2. 디스코드 봇 설정 (슬래시 명령어 사용을 위해 intents 설정)
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -34,36 +36,83 @@ def get_roblox_user_id(username):
             return data[0]["id"]
     return None
 
-def get_audit_logs():
-    url = f"https://groups.roblox.com/v1/groups/{GROUP_ID}/audit-log?limit=100"
-    cookies = {".ROBLOSECURITY": ROBLOSECURITY}
-    response = requests.get(url, cookies=cookies)
-    if response.status_code == 200:
-        return response.json().get("data", [])
-    return []
+def get_audit_logs_within_days(group_id, cookies, days):
+    """지정한 기간(일수) 내의 감사 로그를 페이지네이션을 통해 수집"""
+    logs = []
+    cursor = ""
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # 최대 10페이지(약 1000개)까지만 탐색하여 무한 루프 및 레이트 리밋 방지
+    for _ in range(10):
+        url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
+        if cursor:
+            url += f"&cursor={cursor}"
+        
+        response = requests.get(url, cookies=cookies)
+        if response.status_code != 200:
+            break
+        
+        data = response.json()
+        items = data.get("data", [])
+        if not items:
+            break
+        
+        should_stop = False
+        for item in items:
+            created_str = item.get("created")
+            if created_str:
+                try:
+                    dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                    # 지정한 기간보다 오래된 로그에 도달하면 수집 중단
+                    if dt < cutoff_date:
+                        should_stop = True
+                        break
+                    logs.append(item)
+                except Exception:
+                    logs.append(item)
+        
+        if should_stop:
+            break
+        
+        cursor = data.get("nextPageCursor")
+        if not cursor:
+            break
+            
+    return logs
 
 @bot.event
 async def on_ready():
+    try:
+        # 슬래시 명령어 전역 동기화
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(e)
     print(f'Discord Bot Logged in as {bot.user}!')
 
-@bot.command(name='감사로그')
-async def audit_log(ctx, target_username: str = None):
-    if not target_username:
-        await ctx.send("사용법: `!감사로그 [대상자 로블록스 닉네임]`")
-        return
+# 슬래시 명령어 정의
+@bot.tree.command(name="감사로그", description="로블록스 그룹의 특정 유저 감사 로그를 기간별로 조회합니다.")
+@app_commands.describe(
+    대상자="조회할 로블록스 유저 닉네임",
+    기간="조회할 기간 (일 단위, 예: 7일이면 7 입력)"
+)
+async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: int):
+    # 응답이 지연될 수 있으므로 처 중임을 먼저 알림 (타임아웃 방지)
+    await interaction.response.defer(thinking=True)
 
-    target_username = target_username.lstrip('$')
-    status_msg = await ctx.send(f'🔍 "{target_username}"님의 그룹 감사 로그를 검색 중입니다...')
+    target_username = 대상자.lstrip('$')
 
     try:
         target_user_id = get_roblox_user_id(target_username)
         if not target_user_id:
-            await status_msg.edit(content=f'❌ "{target_username}" 로블록스 유저를 찾을 수 없습니다.')
+            await interaction.followup.send(f'❌ "{target_username}" 로블록스 유저를 찾을 수 없습니다.')
             return
 
-        logs = get_audit_logs()
+        cookies = {".ROBLOSECURITY": ROBLOSECURITY}
+        logs = get_audit_logs_within_days(GROUP_ID, cookies, 기간)
+        
         if not logs:
-            await status_msg.edit(content='⚠️ 감사 로그를 불러오지 못했거나 쿠키 권한이 부족합니다. (쿠키 만료 또는 그룹 ID 확인 필요)')
+            await interaction.followup.send(f'⚠️ 최근 {기간}일 동안의 감사 로그를 불러오지 못했거나 쿠키 권한이 부족합니다.')
             return
 
         user_logs = []
@@ -78,10 +127,10 @@ async def audit_log(ctx, target_username: str = None):
                 user_logs.append(log)
 
         if not user_logs:
-            await status_msg.edit(content=f'❌ "{target_username}"님과 관련된 감사 로그를 찾지 못했습니다.')
+            await interaction.followup.send(f'❌ "{target_username}"님과 관련된 최근 {기간}일 내 감사 로그를 찾지 못했습니다.')
             return
 
-        response_text = f'📋 **[ {targetUsername} ] 관련 모든 감사 로그 (총 {len(user_logs)}개)**\n\n'
+        response_text = f'📋 **[ {target_username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
         for i, log in enumerate(user_logs):
             actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
             action = log.get("actionType", "작업")
@@ -95,12 +144,11 @@ async def audit_log(ctx, target_username: str = None):
                 
             response_text += entry_text
 
-        await status_msg.edit(content=response_text)
+        await interaction.followup.send(response_text)
 
     except Exception as e:
         print(f"Error occurred: {str(e)}")
-        # 디스코드 창에 정확한 에러 내용 표시
-        await status_msg.edit(content=f'⚠️ 에러 발생: `{str(e)}`')
+        await interaction.followup.send(f'⚠️ 에러 발생: `{str(e)}`')
 
 if __name__ == '__main__':
     t = threading.Thread(target=run_flask)
