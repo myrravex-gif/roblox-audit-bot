@@ -69,14 +69,14 @@ def get_roblox_user_info(query):
     except Exception as e:
         print(f"User search error: {e}")
         
-    return None, None, None
+    return None, query, query
 
 def get_audit_logs_within_range(group_id, cookies, start_date_utc, end_date_utc):
     logs = []
     cursor = ""
     
     try:
-        for _ in range(20):
+        for _ in range(25):
             url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
             if cursor:
                 url += f"&cursor={cursor}"
@@ -124,8 +124,7 @@ def format_kst_time(iso_str):
     except Exception:
         return iso_str
 
-def extract_role_name(log):
-    """정확한 역할 이름 필드만 참조하여 유저 이름이 역할명으로 섞이는 오류 방지"""
+def extract_role_name(log, username="", display_name=""):
     try:
         desc = log.get("description", {})
         if isinstance(desc, str):
@@ -138,26 +137,34 @@ def extract_role_name(log):
             for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "Role", "role"]:
                 val = desc.get(key)
                 if val and isinstance(val, str):
+                    # 유저 닉네임이나 아이디가 역할명으로 오인식되는 것 방지
+                    if username and val.lower() == username.lower():
+                        continue
+                    if display_name and val.lower() == display_name.lower():
+                        continue
                     return val
-        elif isinstance(desc, str) and desc:
-            return desc
     except Exception:
         pass
     return "역할"
 
-def format_log_sentence(log, default_target):
+def format_log_sentence(log, username, display_name):
     actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
     action_type = log.get("actionType", "")
     desc = log.get("description", {})
+    if isinstance(desc, str):
+        try:
+            desc = json.loads(desc)
+        except Exception:
+            desc = {}
     
-    target = default_target
+    target = display_name if display_name else username
     if isinstance(desc, dict):
-        if "TargetName" in desc:
+        if "TargetName" in desc and desc["TargetName"]:
             target = desc["TargetName"]
-        elif "UserName" in desc:
+        elif "UserName" in desc and desc["UserName"]:
             target = desc["UserName"]
     
-    role_name = extract_role_name(log)
+    role_name = extract_role_name(log, username, display_name)
     
     if "Unassign Role" in action_type:
         return f"**{actor}** 님이 **{target}** 님에게 지정된 역할군 **{role_name}**을(를) 취소했어요."
@@ -208,8 +215,6 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
         end_utc = end_kst.astimezone(timezone.utc)
 
         target_user_id, username, display_name = get_roblox_user_info(search_query)
-        if not target_user_id:
-            target_user_id = 0
 
         cookies = {".ROBLOSECURITY": ROBLOSECURITY}
         logs = get_audit_logs_within_range(GROUP_ID, cookies, start_utc, end_utc)
@@ -220,25 +225,31 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         user_logs = []
         for log in logs:
-            target_info = log.get("target")
-            desc = log.get("description", "")
-            desc_str = str(desc)
-            if isinstance(desc, dict):
-                desc_str = " ".join([str(v) for v in desc.values()])
+            target_info = log.get("target", {}) or {}
+            desc = log.get("description", {})
+            if isinstance(desc, str):
+                try:
+                    desc = json.loads(desc)
+                except Exception:
+                    desc = {"text": desc}
             
+            log_target_id = target_info.get("id") if isinstance(target_info, dict) else None
+            if not log_target_id and isinstance(desc, dict):
+                log_target_id = desc.get("TargetId") or desc.get("UserId") or desc.get("TargetUserId")
+            
+            match_id = (target_user_id and log_target_id and int(log_target_id) == int(target_user_id))
+            
+            desc_str = " ".join([str(v) for v in desc.values()]) if isinstance(desc, dict) else str(desc)
             actor_name = log.get("actor", {}).get("user", {}).get("username", "")
+            target_username = target_info.get("username", "") if isinstance(target_info, dict) else ""
             
-            # ID 일치 혹은 텍스트(유저네임, 디플닉, 검색어)가 포함되어 있는지 확인
-            match_id = (target_user_id and target_info and target_info.get("id") == target_user_id)
-            match_name = (
-                search_query.lower() in desc_str.lower() or
-                (username and username.lower() in desc_str.lower()) or
-                (display_name and display_name.lower() in desc_str.lower()) or
-                (username and username.lower() in actor_name.lower()) or
-                (display_name and display_name.lower() in actor_name.lower()) or
-                ("yunha" in desc_str.lower()) or
-                ("os940ja" in desc_str.lower())
-            )
+            queries = [q.lower() for q in [search_query, username, display_name, target_username] if q]
+            
+            match_name = False
+            for q in queries:
+                if q and (q in desc_str.lower() or q in actor_name.lower()):
+                    match_name = True
+                    break
             
             if match_id or match_name:
                 user_logs.append(log)
@@ -249,10 +260,10 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             return
 
         period_label = f"{시작일} ~ {종료일}" if 종료일 else f"{시작일} ~ 오늘"
-        response_text = f'**[ {username if username else search_query} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
+        response_text = f'**[ {display_name if display_name else search_query} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
         for log in user_logs:
             date_str = format_kst_time(log.get("created", ""))
-            sentence = format_log_sentence(log, display_name if display_name else search_query)
+            sentence = format_log_sentence(log, username, display_name)
             
             entry_text = f'• **{date_str}**\n  {sentence}\n\n'
             
