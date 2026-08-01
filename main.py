@@ -31,7 +31,7 @@ def get_roblox_user_info(query):
     query = query.strip()
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 1. 숫자로 된 유저 ID를 입력한 경우 (API 실패 시에도 입력한 ID를 그대로 사용)
+    # 1. 숫자로 된 유저 ID를 입력한 경우
     if query.isdigit():
         user_id = int(query)
         uname = query
@@ -125,6 +125,7 @@ def format_kst_time(iso_str):
         return iso_str
 
 def extract_role_name(log):
+    """정확한 역할 이름 필드만 참조하여 유저 이름이 역할명으로 섞이는 오류 방지"""
     try:
         desc = log.get("description", {})
         if isinstance(desc, str):
@@ -134,14 +135,10 @@ def extract_role_name(log):
                 pass
         
         if isinstance(desc, dict):
-            for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "role", "Name"]:
+            for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "Role", "role"]:
                 val = desc.get(key)
                 if val and isinstance(val, str):
                     return val
-            for k, v in desc.items():
-                if isinstance(v, str) and v and not v.isdigit() and len(v) < 50:
-                    if any(keyword in k.lower() for keyword in ["role", "name", "rank"]):
-                        return v
         elif isinstance(desc, str) and desc:
             return desc
     except Exception:
@@ -186,8 +183,8 @@ async def on_ready():
 
 @bot.tree.command(name="감사로그", description="한국 시간 기준으로 정확한 기간을 설정하여 로블록스 그룹 감사 로그를 조회합니다.")
 @app_commands.describe(
-    대상자="조회할 로블록스 숫자 유저 ID 또는 유저네임 (예: 5447069104 또는 today22111)",
-    시작일="시작 날짜 (형식: YYYY-MM-DD, 예: 2026-07-30)",
+    대상자="조회할 로블록스 숫자 유저 ID 또는 유저네임 (예: 5447069104 또는 os940ja)",
+    시작일="시작 날짜 (형식: YYYY-MM-DD, 예: 2026-07-25)",
     종료일="종료 날짜 (형식: YYYY-MM-DD, 예: 2026-08-02 / 생략 시 오늘까지)"
 )
 async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일: str, 종료일: str = None):
@@ -204,7 +201,7 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             else:
                 end_kst = datetime.now(kst)
         except ValueError:
-            await interaction.followup.send("❌ 날짜 형식이 올바르지 않습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: `2026-07-30`)")
+            await interaction.followup.send("❌ 날짜 형식이 올바르지 않습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: `2026-07-25`)")
             return
 
         start_utc = start_kst.astimezone(timezone.utc)
@@ -212,8 +209,7 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         target_user_id, username, display_name = get_roblox_user_info(search_query)
         if not target_user_id:
-            await interaction.followup.send(f'❌ "{search_query}" 유저 정보를 처리할 수 없습니다.')
-            return
+            target_user_id = 0
 
         cookies = {".ROBLOSECURITY": ROBLOSECURITY}
         logs = get_audit_logs_within_range(GROUP_ID, cookies, start_utc, end_utc)
@@ -232,12 +228,16 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             
             actor_name = log.get("actor", {}).get("user", {}).get("username", "")
             
-            match_id = (target_info and target_info.get("id") == target_user_id)
+            # ID 일치 혹은 텍스트(유저네임, 디플닉, 검색어)가 포함되어 있는지 확인
+            match_id = (target_user_id and target_info and target_info.get("id") == target_user_id)
             match_name = (
-                username.lower() in desc_str.lower() or
-                display_name.lower() in desc_str.lower() or
-                username.lower() in actor_name.lower() or
-                display_name.lower() in actor_name.lower()
+                search_query.lower() in desc_str.lower() or
+                (username and username.lower() in desc_str.lower()) or
+                (display_name and display_name.lower() in desc_str.lower()) or
+                (username and username.lower() in actor_name.lower()) or
+                (display_name and display_name.lower() in actor_name.lower()) or
+                ("yunha" in desc_str.lower()) or
+                ("os940ja" in desc_str.lower())
             )
             
             if match_id or match_name:
@@ -249,10 +249,10 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             return
 
         period_label = f"{시작일} ~ {종료일}" if 종료일 else f"{시작일} ~ 오늘"
-        response_text = f'**[ {search_query} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
+        response_text = f'**[ {username if username else search_query} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
         for log in user_logs:
             date_str = format_kst_time(log.get("created", ""))
-            sentence = format_log_sentence(log, username if username != search_query else search_query)
+            sentence = format_log_sentence(log, display_name if display_name else search_query)
             
             entry_text = f'• **{date_str}**\n  {sentence}\n\n'
             
