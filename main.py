@@ -16,10 +16,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
 
-# 2. 디스코드 봇 설정
+# 2. 디스코드 봇 설정 (프리픽스를 '!'로 설정)
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!감사로그', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 GROUP_ID = int(os.environ.get("GROUP_ID", 0))
 ROBLOSECURITY = os.environ.get("ROBLOSECURITY", "")
@@ -46,7 +46,7 @@ def get_audit_logs():
 async def on_ready():
     print(f'Discord Bot Logged in as {bot.user}!')
 
-@bot.command(name='')
+@bot.command(name='감사로그')
 async def audit_log(ctx, target_username: str = None):
     if not target_username:
         await ctx.send("사용법: `!감사로그 [대상자 로블록스 닉네임]`")
@@ -81,7 +81,7 @@ async def audit_log(ctx, target_username: str = None):
             actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
             action = log.get("actionType", "작업")
             date = log.get("created", "알 수 없음")
-            response_text += f'{i + 1}. **일시**: {date}\n   - **실행자**: **{actor}**\n   - **작업**: {action}\n\n'
+            response_text += f'{i + 1}. **일시**: ${date}\n   - **실행자**: **{actor}**\n   - **작업**: ${action}\n\n'
 
         await status_msg.edit(content=response_text)
 
@@ -89,7 +89,6 @@ async def audit_log(ctx, target_username: str = None):
         print(e)
         await status_msg.edit(content='⚠️ 감사 로그를 처리하는 중 오류가 발생했습니다.')
 
-# Flask를 백그라운드로 실행하고 디스코드 봇 구동
 if __name__ == '__main__':
     t = threading.Thread(target=run_flask)
     t.daemon = True
