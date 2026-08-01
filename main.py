@@ -27,22 +27,30 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 GROUP_ID = int(os.environ.get("GROUP_ID", 0))
 ROBLOSECURITY = os.environ.get("ROBLOSECURITY", "")
 
-def get_roblox_user_id(username):
+def get_roblox_user_info(username):
+    """유저네임으로 유저 ID와 표시 이름을 모두 가져옴"""
     url = "https://users.roblox.com/v1/usernames/users"
     payload = {"usernames": [username], "excludeBannedUsers": True}
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         data = response.json().get("data", [])
         if data:
-            return data[0]["id"]
-    return None
+            user_id = data[0]["id"]
+            # 추가로 표시 이름(displayName)도 가져오기 위해 상세 프로필 조회
+            profile_url = f"https://users.roblox.com/v1/users/{user_id}"
+            profile_res = requests.get(profile_url)
+            display_name = username
+            if profile_res.status_code == 200:
+                display_name = profile_res.json().get("displayName", username)
+            return user_id, username, display_name
+    return None, None, None
 
 def get_audit_logs_within_days(group_id, cookies, days):
     logs = []
     cursor = ""
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     
-    for _ in range(10):
+    for _ in range(15): # 검색 범위를 넓히기 위해 페이지 탐색 수 상향
         url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
         if cursor:
             url += f"&cursor={cursor}"
@@ -145,18 +153,18 @@ async def on_ready():
 
 @bot.tree.command(name="감사로그", description="로블록스 그룹의 특정 유저 감사 로그를 자연스러운 문장으로 조회합니다.")
 @app_commands.describe(
-    대상자="조회할 로블록스 유저 닉네임",
+    대상자="조회할 로블록스 유저 닉네임 (아이디)",
     기간="조회할 기간 (일 단위, 예: 7일이면 7 입력)"
 )
 async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: int):
     await interaction.response.defer(thinking=True)
 
-    target_username = 대상자.lstrip('$')
+    search_query = 대상자.lstrip('$').strip()
 
     try:
-        target_user_id = get_roblox_user_id(target_username)
+        target_user_id, username, display_name = get_roblox_user_info(search_query)
         if not target_user_id:
-            await interaction.followup.send(f'❌ "{target_username}" 로블록스 유저를 찾을 수 없습니다.')
+            await interaction.followup.send(f'❌ "{search_query}" 로블록스 유저를 찾을 수 없습니다.')
             return
 
         cookies = {".ROBLOSECURITY": ROBLOSECURITY}
@@ -169,22 +177,34 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: in
         user_logs = []
         for log in logs:
             target_info = log.get("target")
-            description = str(log.get("description", ""))
+            desc = log.get("description", "")
+            desc_str = str(desc)
+            if isinstance(desc, dict):
+                desc_str = " ".join([str(v) for v in desc.values()])
+            
             actor_name = log.get("actor", {}).get("user", {}).get("username", "")
             
-            if (target_info and target_info.get("id") == target_user_id) or \
-               (target_username.lower() in description.lower()) or \
-               (target_username.lower() in actor_name.lower()):
+            # 유저 ID 매치, 또는 유저네임/표시 이름이 로그 설명이나 실행자/대상 정보에 포함되는지 폭넓게 검사
+            match_id = (target_info and target_info.get("id") == target_user_id)
+            match_name = (
+                search_query.lower() in desc_str.lower() or
+                (username and username.lower() in desc_str.lower()) or
+                (display_name and display_name.lower() in desc_str.lower()) or
+                (username and username.lower() in actor_name.lower()) or
+                (display_name and display_name.lower() in actor_name.lower())
+            )
+            
+            if match_id or match_name:
                 user_logs.append(log)
 
         if not user_logs:
-            await interaction.followup.send(f'❌ "{target_username}"님과 관련된 최근 {기간}일 내 감사 로그를 찾지 못했습니다.')
+            await interaction.followup.send(f'❌ "{search_query}"님과 관련된 최근 {기간}일 내 감사 로그를 찾지 못했습니다.')
             return
 
-        response_text = f'**[ {target_username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
+        response_text = f'**[ {username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
         for log in user_logs:
             date_str = format_kst_time(log.get("created", ""))
-            sentence = format_log_sentence(log, target_username)
+            sentence = format_log_sentence(log, username)
             
             entry_text = f'**{date_str}**\n{sentence}\n\n'
             
