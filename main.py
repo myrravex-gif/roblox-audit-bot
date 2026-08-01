@@ -78,7 +78,6 @@ def get_audit_logs_within_days(group_id, cookies, days):
     return logs
 
 def format_kst_time(iso_str):
-    """UTC 시간을 한국 시간(KST)으로 변환하여 보기 쉽게 포맷팅"""
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         kst_dt = dt.astimezone(timezone(timedelta(hours=9)))
@@ -87,7 +86,6 @@ def format_kst_time(iso_str):
         return iso_str
 
 def format_log_sentence(log, default_target):
-    """감사 로그 내용을 자연스러운 문장으로 번역 및 변환"""
     actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
     action_type = log.get("actionType", "")
     desc = log.get("description", {})
@@ -161,12 +159,12 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: in
             await interaction.followup.send(f'❌ "{target_username}"님과 관련된 최근 {기간}일 내 감사 로그를 찾지 못했습니다.')
             return
 
-        response_text = f'📋 **[ {target_username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
+        response_text = f'**[ {target_username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
         for log in user_logs:
             date_str = format_kst_time(log.get("created", ""))
             sentence = format_log_sentence(log, target_username)
             
-            entry_text = f'🗓️ **{date_str}**\n💬 {sentence}\n\n'
+            entry_text = f'**{date_str}**\n{sentence}\n\n'
             
             if len(response_text) + len(entry_text) > 1900:
                 response_text += '\n*(메시지 글자수 제한으로 일부 로그가 생략되었습니다)*'
