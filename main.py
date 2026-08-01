@@ -124,25 +124,38 @@ def format_kst_time(iso_str):
     except Exception:
         return iso_str
 
-def extract_role_name(log, username="", display_name=""):
+def extract_role_name(log, username="", display_name="", actor=""):
     try:
         desc = log.get("description", {})
         if isinstance(desc, str):
             try:
                 desc = json.loads(desc)
             except Exception:
-                pass
+                return desc
         
         if isinstance(desc, dict):
-            for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "Role", "role"]:
+            # 1. 우선적으로 알려진 역할 관련 키 확인
+            for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "Role", "role", "RoleSetName", "TargetRoleName"]:
                 val = desc.get(key)
                 if val and isinstance(val, str):
-                    # 유저 닉네임이나 아이디가 역할명으로 오인식되는 것 방지
-                    if username and val.lower() == username.lower():
-                        continue
-                    if display_name and val.lower() == display_name.lower():
-                        continue
+                    val_lower = val.lower()
+                    if username and val_lower == username.lower(): continue
+                    if display_name and val_lower == display_name.lower(): continue
+                    if actor and val_lower == actor.lower(): continue
                     return val
+            
+            # 2. 키를 찾지 못한 경우 딕셔너리 내 모든 문자열 값 탐색하여 역할명 유추
+            for k, v in desc.items():
+                if isinstance(v, str) and v.strip():
+                    v_lower = v.strip().lower()
+                    if username and v_lower == username.lower(): continue
+                    if display_name and v_lower == display_name.lower(): continue
+                    if actor and v_lower == actor.lower(): continue
+                    if v.isdigit(): continue
+                    if "id" in k.lower(): continue
+                    return v.strip()
+        elif isinstance(desc, str) and desc.strip():
+            return desc.strip()
     except Exception:
         pass
     return "역할"
@@ -164,7 +177,7 @@ def format_log_sentence(log, username, display_name):
         elif "UserName" in desc and desc["UserName"]:
             target = desc["UserName"]
     
-    role_name = extract_role_name(log, username, display_name)
+    role_name = extract_role_name(log, username, display_name, actor)
     
     if "Unassign Role" in action_type:
         return f"**{actor}** 님이 **{target}** 님에게 지정된 역할군 **{role_name}**을(를) 취소했어요."
