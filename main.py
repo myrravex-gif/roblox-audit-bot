@@ -91,17 +91,27 @@ def format_log_sentence(log, default_target):
     desc = log.get("description", {})
     
     target = default_target
+    role_name = "역할"
+    
     if isinstance(desc, dict):
         if "TargetName" in desc:
             target = desc["TargetName"]
         elif "UserName" in desc:
             target = desc["UserName"]
+            
+        # 역할 이름이 담길 수 있는 다양한 키값 확인
+        role_name = (
+            desc.get("RoleName") or 
+            desc.get("roleName") or 
+            desc.get("OldRoleName") or 
+            desc.get("NewRoleName") or 
+            desc.get("Name") or 
+            "역할"
+        )
     
     if "Unassign Role" in action_type:
-        role_name = desc.get("RoleName", "역할") if isinstance(desc, dict) else "역할"
         return f"**{actor}** 님이 **{target}** 님에게 지정된 역할군 **{role_name}**을(를) 취소했어요."
     elif "Assign Role" in action_type:
-        role_name = desc.get("RoleName", "역할") if isinstance(desc, dict) else "역할"
         return f"**{actor}** 님이 **{target}** 님에게 역할군 **{role_name}**을(를) 부여했어요."
     elif "Change Rank" in action_type or "Update Rank" in action_type:
         return f"**{actor}** 님이 **{target}** 님의 랭크를 변경했어요."
