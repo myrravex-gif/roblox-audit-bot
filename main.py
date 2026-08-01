@@ -27,28 +27,44 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 GROUP_ID = int(os.environ.get("GROUP_ID", 0))
 ROBLOSECURITY = os.environ.get("ROBLOSECURITY", "")
 
-def get_roblox_user_info(username):
+def get_roblox_user_info(query):
+    """숫자 유저 ID 또는 유저네임으로 로블록스 유저 정보 검색"""
+    query = query.strip()
+    
+    # 1. 숫자로 된 유저 ID를 입력한 경우
+    if query.isdigit():
+        user_id = int(query)
+        profile_url = f"https://users.roblox.com/v1/users/{user_id}"
+        profile_res = requests.get(profile_url)
+        if profile_res.status_code == 200:
+            data = profile_res.json()
+            uname = data.get("name", "")
+            display_name = data.get("displayName", uname)
+            return user_id, uname, display_name
+
+    # 2. 유저네임(문자열)을 입력한 경우
     url = "https://users.roblox.com/v1/usernames/users"
-    payload = {"usernames": [username], "excludeBannedUsers": True}
+    payload = {"usernames": [query], "excludeBannedUsers": True}
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         data = response.json().get("data", [])
         if data:
             user_id = data[0]["id"]
+            uname = data[0]["name"]
             profile_url = f"https://users.roblox.com/v1/users/{user_id}"
             profile_res = requests.get(profile_url)
-            display_name = username
+            display_name = uname
             if profile_res.status_code == 200:
-                display_name = profile_res.json().get("displayName", username)
-            return user_id, username, display_name
+                display_name = profile_res.json().get("displayName", uname)
+            return user_id, uname, display_name
+            
     return None, None, None
 
 def get_audit_logs_within_range(group_id, cookies, start_date_utc, end_date_utc):
-    """한국 시간 기준 지정된 시작일과 종료일 범위의 감사 로그를 정확하게 수집"""
     logs = []
     cursor = ""
     
-    for _ in range(20): # 최대 20페이지(2,000개)까지 탐색
+    for _ in range(20):
         url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
         if cursor:
             url += f"&cursor={cursor}"
@@ -68,11 +84,9 @@ def get_audit_logs_within_range(group_id, cookies, start_date_utc, end_date_utc)
             if created_str:
                 try:
                     dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-                    # 시작일보다 더 오래된 로그에 도달하면 탐색 중단
                     if dt < start_date_utc:
                         should_stop = True
                         break
-                    # 종료일보다 최신인 로그는 건너뜀
                     if dt > end_date_utc:
                         continue
                     logs.append(item)
@@ -105,10 +119,16 @@ def extract_role_name(log):
             pass
     
     if isinstance(desc, dict):
-        for key in ["RoleName", "roleName", "OldRoleName", "NewRoleName"]:
+        for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "role", "Name"]:
             val = desc.get(key)
             if val and isinstance(val, str):
                 return val
+        for k, v in desc.items():
+            if isinstance(v, str) and v and not v.isdigit() and len(v) < 50:
+                if any(keyword in k.lower() for keyword in ["role", "name", "rank"]):
+                    return v
+    elif isinstance(desc, str) and desc:
+        return desc
     return "역할"
 
 def format_log_sentence(log, default_target):
@@ -149,8 +169,8 @@ async def on_ready():
 
 @bot.tree.command(name="감사로그", description="한국 시간 기준으로 정확한 기간을 설정하여 로블록스 그룹 감사 로그를 조회합니다.")
 @app_commands.describe(
-    대상자="조회할 로블록스 유저 닉네임 (아이디)",
-    시작일="시작 날짜 (형식: YYYY-MM-DD, 예: 2026-07-25)",
+    대상자="조회할 로블록스 숫자 유저 ID 또는 유저네임 (예: 12345678 또는 today22111)",
+    시작일="시작 날짜 (형식: YYYY-MM-DD, 예: 2026-07-30)",
     종료일="종료 날짜 (형식: YYYY-MM-DD, 예: 2026-08-02 / 생략 시 오늘까지)"
 )
 async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일: str, 종료일: str = None):
@@ -160,7 +180,6 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
     kst = timezone(timedelta(hours=9))
 
     try:
-        # 한국 시간 기준 시작일(00:00:00)과 종료일(23:59:59) 파싱
         try:
             start_kst = datetime.strptime(시작일.strip(), "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=kst)
             if 종료일 and 종료일.strip():
@@ -168,7 +187,7 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             else:
                 end_kst = datetime.now(kst)
         except ValueError:
-            await interaction.followup.send("❌ 날짜 형식이 올바르지 않습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: `2026-07-25`)")
+            await interaction.followup.send("❌ 날짜 형식이 올바르지 않습니다. `YYYY-MM-DD` 형식으로 입력해주세요. (예: `2026-07-30`)")
             return
 
         start_utc = start_kst.astimezone(timezone.utc)
@@ -176,14 +195,14 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         target_user_id, username, display_name = get_roblox_user_info(search_query)
         if not target_user_id:
-            await interaction.followup.send(f'❌ "{search_query}" 로블록스 유저를 찾을 수 없습니다.')
+            await interaction.followup.send(f'❌ "{search_query}" 로블록스 유저 정보를 찾을 수 없습니다. (정확한 숫자 ID나 유저네임을 입력해주세요)')
             return
 
         cookies = {".ROBLOSECURITY": ROBLOSECURITY}
         logs = get_audit_logs_within_range(GROUP_ID, cookies, start_utc, end_utc)
         
         if not logs:
-            await interaction.followup.send(f'⚠️ 지정하신 기간({시작일} ~ { 종료il if 종료일 else "오늘" }) 동안의 감사 로그를 불러오지 못했거나 쿠키 권한이 부족합니다.')
+            await interaction.followup.send(f'⚠️ 지정하신 기간({시작일} ~ {종료일 if 종료일 else "오늘" }) 동안의 감사 로그를 불러오지 못했거나 쿠키 권한이 부족합니다.')
             return
 
         user_logs = []
@@ -198,11 +217,10 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
             
             match_id = (target_info and target_info.get("id") == target_user_id)
             match_name = (
-                search_query.lower() in desc_str.lower() or
-                (username and username.lower() in desc_str.lower()) or
-                (display_name and display_name.lower() in desc_str.lower()) or
-                (username and username.lower() in actor_name.lower()) or
-                (display_name and display_name.lower() in actor_name.lower())
+                username.lower() in desc_str.lower() or
+                display_name.lower() in desc_str.lower() or
+                username.lower() in actor_name.lower() or
+                display_name.lower() in actor_name.lower()
             )
             
             if match_id or match_name:
@@ -210,7 +228,7 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         if not user_logs:
             period_str = f"{시작일}부터 {종료일}" if 종료일 else f"{시작일}부터 오늘까지"
-            await interaction.followup.send(f'❌ "{username}"님과 관련된 **{period_str}** 기간 내 감사 로그를 찾지 못했습니다.')
+            await interaction.followup.send(f'❌ "{username}({display_name})"님과 관련된 **{period_str}** 기간 내 감사 로그를 찾지 못했습니다.')
             return
 
         period_label = f"{시작일} ~ {종료일}" if 종료일 else f"{시작일} ~ 오늘"
