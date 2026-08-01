@@ -29,30 +29,42 @@ ROBLOSECURITY = os.environ.get("ROBLOSECURITY", "")
 
 def get_roblox_user_info(query):
     query = query.strip()
-    try:
-        if query.isdigit():
-            user_id = int(query)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 1. 숫자로 된 유저 ID를 입력한 경우 (API 실패 시에도 입력한 ID를 그대로 사용)
+    if query.isdigit():
+        user_id = int(query)
+        uname = query
+        display_name = query
+        try:
             profile_url = f"https://users.roblox.com/v1/users/{user_id}"
-            profile_res = requests.get(profile_url, timeout=5)
+            profile_res = requests.get(profile_url, headers=headers, timeout=5)
             if profile_res.status_code == 200:
                 data = profile_res.json()
-                uname = data.get("name", "")
+                uname = data.get("name", query)
                 display_name = data.get("displayName", uname)
-                return user_id, uname, display_name
+        except Exception:
+            pass
+        return user_id, uname, display_name
 
+    # 2. 유저네임(문자열)을 입력한 경우
+    try:
         url = "https://users.roblox.com/v1/usernames/users"
         payload = {"usernames": [query], "excludeBannedUsers": True}
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json().get("data", [])
             if data:
                 user_id = data[0]["id"]
                 uname = data[0]["name"]
-                profile_url = f"https://users.roblox.com/v1/users/{user_id}"
-                profile_res = requests.get(profile_url, timeout=5)
                 display_name = uname
-                if profile_res.status_code == 200:
-                    display_name = profile_res.json().get("displayName", uname)
+                try:
+                    profile_url = f"https://users.roblox.com/v1/users/{user_id}"
+                    profile_res = requests.get(profile_url, headers=headers, timeout=5)
+                    if profile_res.status_code == 200:
+                        display_name = profile_res.json().get("displayName", uname)
+                except Exception:
+                    pass
                 return user_id, uname, display_name
     except Exception as e:
         print(f"User search error: {e}")
@@ -174,7 +186,7 @@ async def on_ready():
 
 @bot.tree.command(name="감사로그", description="한국 시간 기준으로 정확한 기간을 설정하여 로블록스 그룹 감사 로그를 조회합니다.")
 @app_commands.describe(
-    대상자="조회할 로블록스 숫자 유저 ID 또는 유저네임 (예: 12345678 또는 today22111)",
+    대상자="조회할 로블록스 숫자 유저 ID 또는 유저네임 (예: 5447069104 또는 today22111)",
     시작일="시작 날짜 (형식: YYYY-MM-DD, 예: 2026-07-30)",
     종료일="종료 날짜 (형식: YYYY-MM-DD, 예: 2026-08-02 / 생략 시 오늘까지)"
 )
@@ -200,7 +212,7 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         target_user_id, username, display_name = get_roblox_user_info(search_query)
         if not target_user_id:
-            await interaction.followup.send(f'❌ "{search_query}" 로블록스 유저 정보를 찾을 수 없습니다. (정확한 숫자 ID나 유저네임을 입력해주세요)')
+            await interaction.followup.send(f'❌ "{search_query}" 유저 정보를 처리할 수 없습니다.')
             return
 
         cookies = {".ROBLOSECURITY": ROBLOSECURITY}
@@ -233,14 +245,14 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 시작일:
 
         if not user_logs:
             period_str = f"{시작일}부터 {종료일}" if 종료일 else f"{시작일}부터 오늘까지"
-            await interaction.followup.send(f'❌ "{username}({display_name})"님과 관련된 **{period_str}** 기간 내 감사 로그를 찾지 못했습니다.')
+            await interaction.followup.send(f'❌ "{search_query}"님과 관련된 **{period_str}** 기간 내 감사 로그를 찾지 못했습니다.')
             return
 
         period_label = f"{시작일} ~ {종료일}" if 종료일 else f"{시작일} ~ 오늘"
-        response_text = f'**[ {username} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
+        response_text = f'**[ {search_query} ] 기간별 감사 로그 ({period_label} / 총 {len(user_logs)}개)**\n\n'
         for log in user_logs:
             date_str = format_kst_time(log.get("created", ""))
-            sentence = format_log_sentence(log, username)
+            sentence = format_log_sentence(log, username if username != search_query else search_query)
             
             entry_text = f'• **{date_str}**\n  {sentence}\n\n'
             
