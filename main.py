@@ -52,7 +52,10 @@ async def audit_log(ctx, target_username: str = None):
         await ctx.send("사용법: `!감사로그 [대상자 로블록스 닉네임]`")
         return
 
-    status_msg = await ctx.send(f'🔍 "${target_username}"님의 그룹 감사 로그를 검색 중입니다...')
+    # 닉네임 앞에 붙어있는 $ 기호가 있다면 강제로 제거
+    target_username = target_username.lstrip('$')
+
+    status_msg = await ctx.send(f'🔍 "{target_username}"님의 그룹 감사 로그를 검색 중입니다...')
 
     try:
         target_user_id = get_roblox_user_id(target_username)
@@ -69,7 +72,11 @@ async def audit_log(ctx, target_username: str = None):
         for log in logs:
             target_info = log.get("target")
             description = str(log.get("description", ""))
-            if (target_info and target_info.get("id") == target_user_id) or (target_username.lower() in description.lower()):
+            actor_name = log.get("actor", {}).get("user", {}).get("username", "")
+            
+            if (target_info and target_info.get("id") == target_user_id) or \
+               (target_username.lower() in description.lower()) or \
+               (target_username.lower() in actor_name.lower()):
                 user_logs.append(log)
 
         if not user_logs:
@@ -84,7 +91,6 @@ async def audit_log(ctx, target_username: str = None):
             
             entry_text = f'{i + 1}. **일시**: {date}\n   - **실행자**: **{actor}**\n   - **작업**: {action}\n\n'
             
-            # 디스코드 메시지 글자수 제한(2000자) 초과 방지
             if len(response_text) + len(entry_text) > 1900:
                 response_text += '\n*(메시지 글자수 제한으로 일부 로그가 생략되었습니다)*'
                 break
