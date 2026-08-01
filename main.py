@@ -16,7 +16,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
 
-# 2. 디스코드 봇 설정 (프리픽스를 '!'로 설정)
+# 2. 디스코드 봇 설정
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -52,7 +52,7 @@ async def audit_log(ctx, target_username: str = None):
         await ctx.send("사용법: `!감사로그 [대상자 로블록스 닉네임]`")
         return
 
-    status_msg = await ctx.send(f'🔍 "{target_username}"님의 그룹 감사 로그를 검색 중입니다...')
+    status_msg = await ctx.send(f'🔍 "${target_username}"님의 그룹 감사 로그를 검색 중입니다...')
 
     try:
         target_user_id = get_roblox_user_id(target_username)
@@ -73,15 +73,23 @@ async def audit_log(ctx, target_username: str = None):
                 user_logs.append(log)
 
         if not user_logs:
-            await status_msg.edit(content=f'❌ "{target_username}"님과 관련된 최근 감사 로그를 찾지 못했습니다.')
+            await status_msg.edit(content=f'❌ "{target_username}"님과 관련된 감사 로그를 찾지 못했습니다.')
             return
 
-        response_text = f'📋 **[ {targetUsername} ] 관련 감사 로그 (최근 기록)**\n\n'
-        for i, log in enumerate(user_logs[:5]):
+        response_text = f'📋 **[ {targetUsername} ] 관련 모든 감사 로그 (총 {len(user_logs)}개)**\n\n'
+        for i, log in enumerate(user_logs):
             actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
             action = log.get("actionType", "작업")
             date = log.get("created", "알 수 없음")
-            response_text += f'{i + 1}. **일시**: ${date}\n   - **실행자**: **{actor}**\n   - **작업**: ${action}\n\n'
+            
+            entry_text = f'{i + 1}. **일시**: {date}\n   - **실행자**: **{actor}**\n   - **작업**: {action}\n\n'
+            
+            # 디스코드 메시지 글자수 제한(2000자) 초과 방지
+            if len(response_text) + len(entry_text) > 1900:
+                response_text += '\n*(메시지 글자수 제한으로 일부 로그가 생략되었습니다)*'
+                break
+                
+            response_text += entry_text
 
         await status_msg.edit(content=response_text)
 
