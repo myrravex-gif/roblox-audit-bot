@@ -18,7 +18,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 3000))
     app.run(host='0.0.0.0', port=port)
 
-# 2. 디스코드 봇 설정 (슬래시 명령어 사용을 위해 intents 설정)
+# 2. 디스코드 봇 설정
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -37,12 +37,10 @@ def get_roblox_user_id(username):
     return None
 
 def get_audit_logs_within_days(group_id, cookies, days):
-    """지정한 기간(일수) 내의 감사 로그를 페이지네이션을 통해 수집"""
     logs = []
     cursor = ""
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
     
-    # 최대 10페이지(약 1000개)까지만 탐색하여 무한 루프 및 레이트 리밋 방지
     for _ in range(10):
         url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
         if cursor:
@@ -63,7 +61,6 @@ def get_audit_logs_within_days(group_id, cookies, days):
             if created_str:
                 try:
                     dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-                    # 지정한 기간보다 오래된 로그에 도달하면 수집 중단
                     if dt < cutoff_date:
                         should_stop = True
                         break
@@ -80,24 +77,58 @@ def get_audit_logs_within_days(group_id, cookies, days):
             
     return logs
 
+def format_kst_time(iso_str):
+    """UTC 시간을 한국 시간(KST)으로 변환하여 보기 쉽게 포맷팅"""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        kst_dt = dt.astimezone(timezone(timedelta(hours=9)))
+        return kst_dt.strftime("%Y년 %m월 %d일 %p %I:%M").replace("AM", "오전").replace("PM", "오후")
+    except Exception:
+        return iso_str
+
+def format_log_sentence(log, default_target):
+    """감사 로그 내용을 자연스러운 문장으로 번역 및 변환"""
+    actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
+    action_type = log.get("actionType", "")
+    desc = log.get("description", {})
+    
+    target = default_target
+    if isinstance(desc, dict):
+        if "TargetName" in desc:
+            target = desc["TargetName"]
+        elif "UserName" in desc:
+            target = desc["UserName"]
+    
+    if "Unassign Role" in action_type:
+        role_name = desc.get("RoleName", "역할") if isinstance(desc, dict) else "역할"
+        return f"**{actor}** 님이 **{target}** 님에게 지정된 역할군 **{role_name}**을(를) 취소했어요."
+    elif "Assign Role" in action_type:
+        role_name = desc.get("RoleName", "역할") if isinstance(desc, dict) else "역할"
+        return f"**{actor}** 님이 **{target}** 님에게 역할군 **{role_name}**을(를) 부여했어요."
+    elif "Change Rank" in action_type or "Update Rank" in action_type:
+        return f"**{actor}** 님이 **{target}** 님의 랭크를 변경했어요."
+    elif "Kick" in action_type:
+        return f"**{actor}** 님이 **{target}** 님을 그룹에서 추방했어요."
+    elif "Accept" in action_type:
+        return f"**{actor}** 님이 **{target}** 님의 그룹 가입을 수락했어요."
+    else:
+        return f"**{actor}** 님이 **{target}** 님과 관련하여 **{action_type}** 작업을 수행했어요."
+
 @bot.event
 async def on_ready():
     try:
-        # 슬래시 명령어 전역 동기화
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(e)
     print(f'Discord Bot Logged in as {bot.user}!')
 
-# 슬래시 명령어 정의
-@bot.tree.command(name="감사로그", description="로블록스 그룹의 특정 유저 감사 로그를 기간별로 조회합니다.")
+@bot.tree.command(name="감사로그", description="로블록스 그룹의 특정 유저 감사 로그를 자연스러운 문장으로 조회합니다.")
 @app_commands.describe(
     대상자="조회할 로블록스 유저 닉네임",
     기간="조회할 기간 (일 단위, 예: 7일이면 7 입력)"
 )
 async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: int):
-    # 응답이 지연될 수 있으므로 처 중임을 먼저 알림 (타임아웃 방지)
     await interaction.response.defer(thinking=True)
 
     target_username = 대상자.lstrip('$')
@@ -131,12 +162,11 @@ async def audit_log(interaction: discord.Interaction, 대상자: str, 기간: in
             return
 
         response_text = f'📋 **[ {target_username} ] 최근 {기간}일 간 감사 로그 (총 {len(user_logs)}개)**\n\n'
-        for i, log in enumerate(user_logs):
-            actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
-            action = log.get("actionType", "작업")
-            date = log.get("created", "알 수 없음")
+        for log in user_logs:
+            date_str = format_kst_time(log.get("created", ""))
+            sentence = format_log_sentence(log, target_username)
             
-            entry_text = f'{i + 1}. **일시**: {date}\n   - **실행자**: **{actor}**\n   - **작업**: {action}\n\n'
+            entry_text = f'🗓️ **{date_str}**\n💬 {sentence}\n\n'
             
             if len(response_text) + len(entry_text) > 1900:
                 response_text += '\n*(메시지 글자수 제한으로 일부 로그가 생략되었습니다)*'
