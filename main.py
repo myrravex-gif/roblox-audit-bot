@@ -8,7 +8,7 @@ import requests
 from flask import Flask
 from datetime import datetime, timedelta, timezone
 
-# 1. Flask 웹 서버 설정 (Render 웹 서비스 포트 바인딩용)
+# 1. Flask 웹 서버 설정
 app = Flask('')
 
 @app.route('/')
@@ -24,81 +24,83 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-GROUP_ID = int(os.environ.get("GROUP_ID", 0))
+GROUP_ID = int(os.environ.get("GROUP_ID", 0) or 0)
 ROBLOSECURITY = os.environ.get("ROBLOSECURITY", "")
 
 def get_roblox_user_info(query):
-    """숫자 유저 ID 또는 유저네임으로 로블록스 유저 정보 검색"""
     query = query.strip()
-    
-    # 1. 숫자로 된 유저 ID를 입력한 경우
-    if query.isdigit():
-        user_id = int(query)
-        profile_url = f"https://users.roblox.com/v1/users/{user_id}"
-        profile_res = requests.get(profile_url)
-        if profile_res.status_code == 200:
-            data = profile_res.json()
-            uname = data.get("name", "")
-            display_name = data.get("displayName", uname)
-            return user_id, uname, display_name
-
-    # 2. 유저네임(문자열)을 입력한 경우
-    url = "https://users.roblox.com/v1/usernames/users"
-    payload = {"usernames": [query], "excludeBannedUsers": True}
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        data = response.json().get("data", [])
-        if data:
-            user_id = data[0]["id"]
-            uname = data[0]["name"]
+    try:
+        if query.isdigit():
+            user_id = int(query)
             profile_url = f"https://users.roblox.com/v1/users/{user_id}"
-            profile_res = requests.get(profile_url)
-            display_name = uname
+            profile_res = requests.get(profile_url, timeout=5)
             if profile_res.status_code == 200:
-                display_name = profile_res.json().get("displayName", uname)
-            return user_id, uname, display_name
-            
+                data = profile_res.json()
+                uname = data.get("name", "")
+                display_name = data.get("displayName", uname)
+                return user_id, uname, display_name
+
+        url = "https://users.roblox.com/v1/usernames/users"
+        payload = {"usernames": [query], "excludeBannedUsers": True}
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            data = response.json().get("data", [])
+            if data:
+                user_id = data[0]["id"]
+                uname = data[0]["name"]
+                profile_url = f"https://users.roblox.com/v1/users/{user_id}"
+                profile_res = requests.get(profile_url, timeout=5)
+                display_name = uname
+                if profile_res.status_code == 200:
+                    display_name = profile_res.json().get("displayName", uname)
+                return user_id, uname, display_name
+    except Exception as e:
+        print(f"User search error: {e}")
+        
     return None, None, None
 
 def get_audit_logs_within_range(group_id, cookies, start_date_utc, end_date_utc):
     logs = []
     cursor = ""
     
-    for _ in range(20):
-        url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
-        if cursor:
-            url += f"&cursor={cursor}"
-        
-        response = requests.get(url, cookies=cookies)
-        if response.status_code != 200:
-            break
-        
-        data = response.json()
-        items = data.get("data", [])
-        if not items:
-            break
-        
-        should_stop = False
-        for item in items:
-            created_str = item.get("created")
-            if created_str:
-                try:
-                    dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-                    if dt < start_date_utc:
-                        should_stop = True
-                        break
-                    if dt > end_date_utc:
+    try:
+        for _ in range(20):
+            url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
+            if cursor:
+                url += f"&cursor={cursor}"
+            
+            response = requests.get(url, cookies=cookies, timeout=10)
+            if response.status_code != 200:
+                break
+            
+            data = response.json()
+            items = data.get("data", [])
+            if not items:
+                break
+            
+            should_stop = False
+            for item in items:
+                created_str = item.get("created")
+                if created_str:
+                    try:
+                        dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        if dt < start_date_utc:
+                            should_stop = True
+                            break
+                        if dt > end_date_utc:
+                            continue
+                        logs.append(item)
+                    except Exception:
                         continue
-                    logs.append(item)
-                except Exception:
-                    continue
-        
-        if should_stop:
-            break
-        
-        cursor = data.get("nextPageCursor")
-        if not cursor:
-            break
+            
+            if should_stop:
+                break
+            
+            cursor = data.get("nextPageCursor")
+            if not cursor:
+                break
+    except Exception as e:
+        print(f"Audit log fetch error: {e}")
             
     return logs
 
@@ -111,24 +113,27 @@ def format_kst_time(iso_str):
         return iso_str
 
 def extract_role_name(log):
-    desc = log.get("description", {})
-    if isinstance(desc, str):
-        try:
-            desc = json.loads(desc)
-        except Exception:
-            pass
-    
-    if isinstance(desc, dict):
-        for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "role", "Name"]:
-            val = desc.get(key)
-            if val and isinstance(val, str):
-                return val
-        for k, v in desc.items():
-            if isinstance(v, str) and v and not v.isdigit() and len(v) < 50:
-                if any(keyword in k.lower() for keyword in ["role", "name", "rank"]):
-                    return v
-    elif isinstance(desc, str) and desc:
-        return desc
+    try:
+        desc = log.get("description", {})
+        if isinstance(desc, str):
+            try:
+                desc = json.loads(desc)
+            except Exception:
+                pass
+        
+        if isinstance(desc, dict):
+            for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "role", "Name"]:
+                val = desc.get(key)
+                if val and isinstance(val, str):
+                    return val
+            for k, v in desc.items():
+                if isinstance(v, str) and v and not v.isdigit() and len(v) < 50:
+                    if any(keyword in k.lower() for keyword in ["role", "name", "rank"]):
+                        return v
+        elif isinstance(desc, str) and desc:
+            return desc
+    except Exception:
+        pass
     return "역할"
 
 def format_log_sentence(log, default_target):
@@ -164,7 +169,7 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
-        print(e)
+        print(f"Sync error: {e}")
     print(f'Discord Bot Logged in as {bot.user}!')
 
 @bot.tree.command(name="감사로그", description="한국 시간 기준으로 정확한 기간을 설정하여 로블록스 그룹 감사 로그를 조회합니다.")
