@@ -76,7 +76,8 @@ def get_audit_logs_within_range(group_id, cookies, start_date_utc, end_date_utc)
     cursor = ""
     
     try:
-        for _ in range(25):
+        # 과거 로그를 최대한 깊게 조회할 수 있도록 탐색 페이지 수를 500페이지(최대 50,000개 로그)로 최대로 확장
+        for _ in range(500):
             url = f"https://groups.roblox.com/v1/groups/{group_id}/audit-log?limit=100"
             if cursor:
                 url += f"&cursor={cursor}"
@@ -134,7 +135,6 @@ def extract_role_name(log, username="", display_name="", actor=""):
                 return desc
         
         if isinstance(desc, dict):
-            # 1. 우선적으로 알려진 역할 관련 키 확인
             for key in ["NewRoleName", "RoleName", "roleName", "OldRoleName", "Role", "role", "RoleSetName", "TargetRoleName"]:
                 val = desc.get(key)
                 if val and isinstance(val, str):
@@ -144,7 +144,6 @@ def extract_role_name(log, username="", display_name="", actor=""):
                     if actor and val_lower == actor.lower(): continue
                     return val
             
-            # 2. 키를 찾지 못한 경우 딕셔너리 내 모든 문자열 값 탐색하여 역할명 유추
             for k, v in desc.items():
                 if isinstance(v, str) and v.strip():
                     v_lower = v.strip().lower()
