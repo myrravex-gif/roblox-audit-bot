@@ -1,5 +1,6 @@
 import os
 import threading
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -85,29 +86,40 @@ def format_kst_time(iso_str):
     except Exception:
         return iso_str
 
+def extract_role_name(log, target_username):
+    desc = log.get("description", {})
+    if isinstance(desc, str):
+        try:
+            desc = json.loads(desc)
+        except Exception:
+            pass
+    
+    if isinstance(desc, dict):
+        for key in ["RoleName", "roleName", "OldRoleName", "NewRoleName", "Name", "role"]:
+            val = desc.get(key)
+            if val and isinstance(val, str):
+                return val
+        for k, v in desc.items():
+            if ("role" in k.lower() or "name" in k.lower()) and isinstance(v, str) and v.lower() != target_username.lower():
+                return v
+    elif isinstance(desc, str) and desc:
+        return desc
+        
+    return "역할"
+
 def format_log_sentence(log, default_target):
     actor = log.get("actor", {}).get("user", {}).get("username", "알 수 없음")
     action_type = log.get("actionType", "")
     desc = log.get("description", {})
     
     target = default_target
-    role_name = "역할"
-    
     if isinstance(desc, dict):
         if "TargetName" in desc:
             target = desc["TargetName"]
         elif "UserName" in desc:
             target = desc["UserName"]
-            
-        # 역할 이름이 담길 수 있는 다양한 키값 확인
-        role_name = (
-            desc.get("RoleName") or 
-            desc.get("roleName") or 
-            desc.get("OldRoleName") or 
-            desc.get("NewRoleName") or 
-            desc.get("Name") or 
-            "역할"
-        )
+    
+    role_name = extract_role_name(log, target)
     
     if "Unassign Role" in action_type:
         return f"**{actor}** 님이 **{target}** 님에게 지정된 역할군 **{role_name}**을(를) 취소했어요."
